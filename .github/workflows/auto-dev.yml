@@ -91,8 +91,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          RAW=$(gh api "repos/$GH_REPO/actions/variables/AUTO_DEV_CONFIG" --jq '.value' 2>/dev/null || echo '{}')
-          MAX=$(echo "$RAW" | jq -r '.max_issues_per_run // empty' 2>/dev/null)
+          RAW=$(gh api "repos/$GH_REPO/actions/variables/AUTO_DEV_CONFIG" 2>/dev/null | jq -r '.value' 2>/dev/null | head -n 1 || true)
+          [[ -z "$RAW" ]] && RAW='{}'
+          MAX=$(echo "$RAW" | jq -r '.max_issues_per_run // empty' 2>/dev/null | head -n 1)
           echo "max_issues=${MAX:-${{ env.MAX_ISSUES_PER_RUN }}}" >> $GITHUB_OUTPUT
 
       - name: Get issues to process
@@ -210,19 +211,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          RAW=$(gh api "repos/$GH_REPO/actions/variables/AUTO_DEV_CONFIG" --jq '.value' 2>/dev/null || echo '{}')
-          PRESET=$(echo "$RAW" | jq -r '.preset // "high"')
-          CI=$(echo "$RAW" | jq -r 'if .create_issues == false then "false" else "true" end')
-          CP=$(echo "$RAW" | jq -r 'if .create_prs    == false then "false" else "true" end')
-          PC=$(echo "$RAW" | jq -r 'if .push_commits  == false then "false" else "true" end')
-          echo "DEBUG: GITHUB_OUTPUT=$GITHUB_OUTPUT"
-          echo "DEBUG: PRESET='$PRESET' CI='$CI' CP='$CP' PC='$PC'"
-          echo "DEBUG: writing preset line..."
-          printf 'preset=%s\n' "$PRESET" >> "$GITHUB_OUTPUT"
-          printf 'create_issues=%s\n' "$CI" >> "$GITHUB_OUTPUT"
-          printf 'create_prs=%s\n' "$CP" >> "$GITHUB_OUTPUT"
-          printf 'push_commits=%s\n' "$PC" >> "$GITHUB_OUTPUT"
-          echo "DEBUG: done"
+          RAW=$(gh api "repos/$GH_REPO/actions/variables/AUTO_DEV_CONFIG" 2>/dev/null | jq -r '.value' 2>/dev/null | head -n 1 || true)
+          [[ -z "$RAW" ]] && RAW='{}'
+          PRESET=$(echo "$RAW" | jq -r '.preset // "high"' | head -n 1)
+          CI=$(echo "$RAW" | jq -r 'if .create_issues == false then "false" else "true" end' | head -n 1)
+          CP=$(echo "$RAW" | jq -r 'if .create_prs    == false then "false" else "true" end' | head -n 1)
+          PC=$(echo "$RAW" | jq -r 'if .push_commits  == false then "false" else "true" end' | head -n 1)
+          printf 'preset=%s\n'        "$PRESET" >> "$GITHUB_OUTPUT"
+          printf 'create_issues=%s\n' "$CI"     >> "$GITHUB_OUTPUT"
+          printf 'create_prs=%s\n'    "$CP"     >> "$GITHUB_OUTPUT"
+          printf 'push_commits=%s\n'  "$PC"     >> "$GITHUB_OUTPUT"
 
       - name: Determine current state
         id: state
