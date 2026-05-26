@@ -13,6 +13,11 @@ on:
         description: "Issue number (empty = scan all ai-labeled issues)"
         required: false
         type: string
+      skip_usage_check:
+        description: "Skip the Claude usage threshold check"
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: auto-dev
@@ -54,9 +59,17 @@ jobs:
       - name: Check Claude tier usage bucket
         id: check
         run: |
-          USAGE_FILE="/tmp/claude-usage.json"
-          MIN_PCT_TO_START="${MIN_PCT_TO_START:-50}"
+          if [[ "${{ inputs.skip_usage_check }}" == "true" ]]; then
+            echo "skip_usage_check requested — bypassing threshold"
+            echo "ok=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
 
+          GLOBAL_CONFIG="$HOME/.config/claude-toolkit/global.json"
+          BAILOUT_PCT=$(jq -r '.bailout_pct // empty' "$GLOBAL_CONFIG" 2>/dev/null | head -n 1)
+          BAILOUT_PCT="${BAILOUT_PCT:-50}"
+
+          USAGE_FILE="/tmp/claude-usage.json"
           if [[ ! -f "$USAGE_FILE" ]]; then
             echo "Usage file not found — assuming bucket available"
             echo "ok=true" >> $GITHUB_OUTPUT
@@ -65,10 +78,10 @@ jobs:
 
           PCT=$(python3 -c "import json; d=json.load(open('$USAGE_FILE')); print(d.get('pct', 0))" 2>/dev/null || echo "0")
 
-          echo "Current usage: ${PCT}%  (threshold: ${MIN_PCT_TO_START}%)"
+          echo "Current usage: ${PCT}%  (threshold: ${BAILOUT_PCT}%)"
 
-          if (( PCT >= MIN_PCT_TO_START )); then
-            echo "Usage too high (${PCT}% >= ${MIN_PCT_TO_START}%) — skipping this run"
+          if (( PCT >= BAILOUT_PCT )); then
+            echo "Usage too high (${PCT}% >= ${BAILOUT_PCT}%) — skipping this run"
             echo "ok=false" >> $GITHUB_OUTPUT
           else
             echo "ok=true" >> $GITHUB_OUTPUT
@@ -85,15 +98,11 @@ jobs:
       matrix: ${{ steps.get-issues.outputs.matrix }}
       has_issues: ${{ steps.get-issues.outputs.has_issues }}
     steps:
-      - name: Load max issues from config
+      - name: Load max issues from global config
         id: repo-config
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
         run: |
-          RAW=$(gh api "repos/$GH_REPO/actions/variables/AUTO_DEV_CONFIG" 2>/dev/null | jq -r '.value' 2>/dev/null | head -n 1 || true)
-          [[ -z "$RAW" ]] && RAW='{}'
-          MAX=$(echo "$RAW" | jq -r '.max_issues_per_run // empty' 2>/dev/null | head -n 1)
+          GLOBAL_CONFIG="$HOME/.config/claude-toolkit/global.json"
+          MAX=$(jq -r '.max_issues_per_run // empty' "$GLOBAL_CONFIG" 2>/dev/null | head -n 1)
           echo "max_issues=${MAX:-${{ env.MAX_ISSUES_PER_RUN }}}" >> $GITHUB_OUTPUT
 
       - name: Get issues to process
@@ -213,14 +222,15 @@ jobs:
         run: |
           RAW=$(gh api "repos/$GH_REPO/actions/variables/AUTO_DEV_CONFIG" 2>/dev/null | jq -r '.value' 2>/dev/null | head -n 1 || true)
           [[ -z "$RAW" ]] && RAW='{}'
-          PRESET=$(echo "$RAW" | jq -r '.preset // "high"' | head -n 1)
-          CI=$(echo "$RAW" | jq -r 'if .create_issues == false then "false" else "true" end' | head -n 1)
-          CP=$(echo "$RAW" | jq -r 'if .create_prs    == false then "false" else "true" end' | head -n 1)
-          PC=$(echo "$RAW" | jq -r 'if .push_commits  == false then "false" else "true" end' | head -n 1)
-          printf 'preset=%s\n'        "$PRESET" >> "$GITHUB_OUTPUT"
-          printf 'create_issues=%s\n' "$CI"     >> "$GITHUB_OUTPUT"
-          printf 'create_prs=%s\n'    "$CP"     >> "$GITHUB_OUTPUT"
-          printf 'push_commits=%s\n'  "$PC"     >> "$GITHUB_OUTPUT"
+          AUTONOMY=$(echo "$RAW" | jq -r '.autonomy // "high"' | head -n 1)
+          case "$AUTONOMY" in
+            low)  CI=true; CP=false; PC=false ;;
+            *)    AUTONOMY=high; CI=true; CP=true; PC=true ;;
+          esac
+          printf 'autonomy=%s\n'      "$AUTONOMY" >> "$GITHUB_OUTPUT"
+          printf 'create_issues=%s\n' "$CI"       >> "$GITHUB_OUTPUT"
+          printf 'create_prs=%s\n'    "$CP"       >> "$GITHUB_OUTPUT"
+          printf 'push_commits=%s\n'  "$PC"       >> "$GITHUB_OUTPUT"
 
       - name: Determine current state
         id: state
@@ -345,10 +355,15 @@ jobs:
             printf '%s\n' "$COMMENTS"
           } > "$WORK_DIR/evaluate-prompt.txt"
 
-          RESULT=$(claude --dangerously-skip-permissions --output-format json -p "$(cat "$WORK_DIR/evaluate-prompt.txt")" 2>"$WORK_DIR/evaluate-stderr.txt") || true
+          SCHEMA='{"type":"object","properties":{"decision":{"type":"string","enum":["epic","clarify","ready","blocked"]},"comment":{"type":"string"},"lhf":{"type":"array","items":{"type":"object","properties":{"title":{"type":"string"},"body":{"type":"string"}},"required":["title","body"]}},"questions":{"type":"string"},"summary":{"type":"string"},"approach":{"type":"string"},"reason":{"type":"string"}},"required":["decision"]}'
+          RESULT=$(claude --dangerously-skip-permissions --output-format json --json-schema "$SCHEMA" -p "$(cat "$WORK_DIR/evaluate-prompt.txt")" 2>"$WORK_DIR/evaluate-stderr.txt") || true
           echo "$RESULT" > "$WORK_DIR/evaluate-result.json"
 
-          DECISION=$(echo "$RESULT" | jq -r '.result // . | if type == "object" then .decision else . end | if . == null then "error" else . end' 2>/dev/null || echo "error")
+          DECISION=$(jq -r '.structured_output.decision // "error"' "$WORK_DIR/evaluate-result.json" 2>/dev/null || echo "error")
+          case "$DECISION" in
+            epic|clarify|ready|blocked) ;;
+            *) DECISION="error" ;;
+          esac
           echo "decision=$DECISION" >> $GITHUB_OUTPUT
 
       - name: "new → post clarifying question"
@@ -357,7 +372,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          QUESTIONS=$(jq -r '.result // . | if type == "object" then .questions else . end // "Could not extract questions."' "$WORK_DIR/evaluate-result.json" 2>/dev/null)
+          QUESTIONS=$(jq -r '.structured_output.questions // "Could not extract questions."' "$WORK_DIR/evaluate-result.json" 2>/dev/null)
           ROUND=$(jq '[.comments[] | select(.body | test("<!-- auto-dev:question -->"))] | length' "$WORK_DIR/issue.json")
           {
             echo "🤖 **Auto-dev** — Question (round $((ROUND + 1)))"
@@ -377,8 +392,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          SUMMARY=$(jq -r '.result // . | if type == "object" then .summary else . end // "N/A"' "$WORK_DIR/evaluate-result.json" 2>/dev/null)
-          APPROACH=$(jq -r '.result // . | if type == "object" then .approach else . end // "N/A"' "$WORK_DIR/evaluate-result.json" 2>/dev/null)
+          SUMMARY=$(jq -r '.structured_output.summary // "N/A"' "$WORK_DIR/evaluate-result.json" 2>/dev/null)
+          APPROACH=$(jq -r '.structured_output.approach // "N/A"' "$WORK_DIR/evaluate-result.json" 2>/dev/null)
           {
             echo "🤖 **Auto-dev** — Ready"
             echo ""
@@ -401,8 +416,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          COMMENT=$(jq -r '.result // . | if type == "object" then .comment else . end // "This issue describes an epic-level goal."' "$WORK_DIR/evaluate-result.json" 2>/dev/null)
-          LHF=$(jq -r '.result // . | if type == "object" then (.lhf // []) else [] end' "$WORK_DIR/evaluate-result.json" 2>/dev/null)
+          COMMENT=$(jq -r '.structured_output.comment // "This issue describes an epic-level goal."' "$WORK_DIR/evaluate-result.json" 2>/dev/null)
+          LHF=$(jq -c '.structured_output.lhf // []' "$WORK_DIR/evaluate-result.json" 2>/dev/null)
 
           SUB_ISSUES=""
           if [[ "${{ steps.repo-config.outputs.create_issues }}" != "false" ]]; then
@@ -438,7 +453,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          REASON=$(jq -r '.result // . | if type == "object" then .reason else . end // "Evaluation failed or returned unexpected output."' "$WORK_DIR/evaluate-result.json" 2>/dev/null)
+          REASON=$(jq -r '.structured_output.reason // "Evaluation failed or returned unexpected output."' "$WORK_DIR/evaluate-result.json" 2>/dev/null)
           {
             echo "🤖 **Auto-dev** — Blocked"
             echo ""
@@ -510,11 +525,12 @@ jobs:
             printf '%s\n' "$COMMENTS"
           } > "$WORK_DIR/plan-prompt.txt"
 
-          RESULT=$(claude --dangerously-skip-permissions --output-format json -p "$(cat "$WORK_DIR/plan-prompt.txt")" 2>"$WORK_DIR/plan-stderr.txt") || true
+          SCHEMA='{"type":"object","properties":{"tasks":{"type":"array","items":{"type":"string"}}},"required":["tasks"]}'
+          RESULT=$(claude --dangerously-skip-permissions --output-format json --json-schema "$SCHEMA" -p "$(cat "$WORK_DIR/plan-prompt.txt")" 2>"$WORK_DIR/plan-stderr.txt") || true
           echo "$RESULT" > "$WORK_DIR/plan-result.json"
 
-          TASKS=$(echo "$RESULT" | jq -r '.result // . | if type == "object" then .tasks else . end // []' 2>/dev/null || echo "[]")
-          echo "tasks=$(echo "$TASKS" | jq -c .)" >> $GITHUB_OUTPUT
+          TASKS=$(jq -c '.structured_output.tasks // []' "$WORK_DIR/plan-result.json" 2>/dev/null || echo "[]")
+          echo "tasks=$TASKS" >> $GITHUB_OUTPUT
 
       - name: "ready → create branch and draft PR"
         if: steps.state.outputs.state == 'ready' && steps.state.outputs.pr_number == '' && steps.plan.outputs.tasks != '[]' && steps.repo-config.outputs.create_prs != 'false'
@@ -619,10 +635,15 @@ jobs:
             echo 'If question:  {"status": "question", "text": "Your question", "context": "Relevant code context"}'
           } > "$WORK_DIR/implement-prompt.txt"
 
-          RESULT=$(claude --dangerously-skip-permissions --output-format json -p "$(cat "$WORK_DIR/implement-prompt.txt")" 2>"$WORK_DIR/implement-stderr.txt") || true
+          SCHEMA='{"type":"object","properties":{"status":{"type":"string","enum":["completed","blocked","question"]},"summary":{"type":"string"},"reason":{"type":"string"},"suggestion":{"type":"string"},"text":{"type":"string"},"context":{"type":"string"}},"required":["status"]}'
+          RESULT=$(claude --dangerously-skip-permissions --output-format json --json-schema "$SCHEMA" -p "$(cat "$WORK_DIR/implement-prompt.txt")" 2>"$WORK_DIR/implement-stderr.txt") || true
           echo "$RESULT" > "$WORK_DIR/implement-result.json"
 
-          STATUS=$(echo "$RESULT" | jq -r '.result // . | if type == "object" then .status else "error" end' 2>/dev/null || echo "error")
+          STATUS=$(jq -r '.structured_output.status // "error"' "$WORK_DIR/implement-result.json" 2>/dev/null || echo "error")
+          case "$STATUS" in
+            completed|blocked|question) ;;
+            *) STATUS="error" ;;
+          esac
           echo "outcome=$STATUS" >> $GITHUB_OUTPUT
 
           if [[ "$STATUS" == "completed" ]]; then
@@ -646,7 +667,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ steps.state.outputs.pr_number }}
         run: |
-          SUMMARY=$(jq -r '.result // . | if type == "object" then .summary else . end // "Task completed."' "$WORK_DIR/implement-result.json" 2>/dev/null)
+          SUMMARY=$(jq -r '.structured_output.summary // "Task completed."' "$WORK_DIR/implement-result.json" 2>/dev/null)
           TODO="${{ steps.implement.outputs.todo }}"
 
           # Check if all todos are now done
@@ -679,14 +700,14 @@ jobs:
         run: |
           OUTCOME="${{ steps.implement.outputs.outcome }}"
           if [[ "$OUTCOME" == "blocked" ]]; then
-            REASON=$(jq -r '.result // . | if type == "object" then .reason else . end // "Blocked."' "$WORK_DIR/implement-result.json" 2>/dev/null)
-            SUGGESTION=$(jq -r '.result // . | if type == "object" then .suggestion else . end // ""' "$WORK_DIR/implement-result.json" 2>/dev/null)
+            REASON=$(jq -r '.structured_output.reason // "Blocked."' "$WORK_DIR/implement-result.json" 2>/dev/null)
+            SUGGESTION=$(jq -r '.structured_output.suggestion // ""' "$WORK_DIR/implement-result.json" 2>/dev/null)
             BODY="🤖 **Auto-dev** — ⊘ Blocked: $REASON"
             [[ -n "$SUGGESTION" ]] && BODY=$(printf '%s\n%s' "$BODY" "Suggestion: $SUGGESTION")
             gh pr comment "$PR_NUMBER" --body "$BODY"
           else
-            QUESTION=$(jq -r '.result // . | if type == "object" then .text else . end // "Question."' "$WORK_DIR/implement-result.json" 2>/dev/null)
-            CONTEXT=$(jq -r '.result // . | if type == "object" then .context else . end // ""' "$WORK_DIR/implement-result.json" 2>/dev/null)
+            QUESTION=$(jq -r '.structured_output.text // "Question."' "$WORK_DIR/implement-result.json" 2>/dev/null)
+            CONTEXT=$(jq -r '.structured_output.context // ""' "$WORK_DIR/implement-result.json" 2>/dev/null)
             BODY="🤖 **Auto-dev** — ❓ $QUESTION"
             [[ -n "$CONTEXT" ]] && BODY=$(printf '%s\n%s' "$BODY" "Context: $CONTEXT")
             gh pr comment "$PR_NUMBER" --body "$BODY"
@@ -759,10 +780,10 @@ jobs:
             }
           ' 2>/dev/null || echo '{"total":0}')
 
-          PRESET="${{ steps.repo-config.outputs.preset }}"
+          AUTONOMY="${{ steps.repo-config.outputs.autonomy }}"
           jq -n \
             --argjson states "$ISSUE_STATES" \
             --argjson ts "$(date +%s)" \
             --arg repo "$GH_REPO" \
-            --arg preset "${PRESET:-high}" \
-            '{ts: $ts, repo: $repo, preset: $preset, issues: $states}' > "$STATE_DIR/$REPO_SLUG-status.json"
+            --arg autonomy "${AUTONOMY:-high}" \
+            '{ts: $ts, repo: $repo, autonomy: $autonomy, issues: $states}' > "$STATE_DIR/$REPO_SLUG-status.json"
