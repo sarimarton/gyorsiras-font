@@ -215,10 +215,14 @@ jobs:
           CI=$(echo "$RAW" | jq -r 'if .create_issues == false then "false" else "true" end')
           CP=$(echo "$RAW" | jq -r 'if .create_prs    == false then "false" else "true" end')
           PC=$(echo "$RAW" | jq -r 'if .push_commits  == false then "false" else "true" end')
-          echo "preset=$PRESET"         >> $GITHUB_OUTPUT
-          echo "create_issues=$CI"      >> $GITHUB_OUTPUT
-          echo "create_prs=$CP"         >> $GITHUB_OUTPUT
-          echo "push_commits=$PC"       >> $GITHUB_OUTPUT
+          echo "DEBUG: GITHUB_OUTPUT=$GITHUB_OUTPUT"
+          echo "DEBUG: PRESET='$PRESET' CI='$CI' CP='$CP' PC='$PC'"
+          echo "DEBUG: writing preset line..."
+          printf 'preset=%s\n' "$PRESET" >> "$GITHUB_OUTPUT"
+          printf 'create_issues=%s\n' "$CI" >> "$GITHUB_OUTPUT"
+          printf 'create_prs=%s\n' "$CP" >> "$GITHUB_OUTPUT"
+          printf 'push_commits=%s\n' "$PC" >> "$GITHUB_OUTPUT"
+          echo "DEBUG: done"
 
       - name: Determine current state
         id: state
