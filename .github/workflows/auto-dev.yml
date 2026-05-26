@@ -339,7 +339,7 @@ jobs:
             echo 'If READY:   {"decision": "ready", "summary": "One-line issue summary", "approach": "Planned approach in 2-3 sentences with concrete file references"}'
             echo 'If BLOCKED: {"decision": "blocked", "reason": "Why you cannot proceed"}'
             echo ""
-            printf '--- ISSUE #%s: %s ---\n\n' "$ISSUE_NUMBER" "$ISSUE_TITLE"
+            printf -- '--- ISSUE #%s: %s ---\n\n' "$ISSUE_NUMBER" "$ISSUE_TITLE"
             printf '%s\n' "$ISSUE_BODY"
             printf '\n--- COMMENTS ---\n\n'
             printf '%s\n' "$COMMENTS"
@@ -504,7 +504,7 @@ jobs:
             echo "  - If only manual testing is possible, add a task in this exact format: 'Manual validation: [exactly what to do and what to look for]'"
             echo '- Output ONLY valid JSON: {"tasks": ["task description 1", "task description 2", ...]}'
             echo ""
-            printf '--- ISSUE #%s: %s ---\n\n' "$ISSUE_NUMBER" "$ISSUE_TITLE"
+            printf -- '--- ISSUE #%s: %s ---\n\n' "$ISSUE_NUMBER" "$ISSUE_TITLE"
             printf '%s\n' "$ISSUE_BODY"
             printf '\n--- DISCUSSION ---\n\n'
             printf '%s\n' "$COMMENTS"
