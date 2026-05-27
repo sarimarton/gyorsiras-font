@@ -319,9 +319,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           MODEL: ${{ steps.state.outputs.model }}
+          _ISSUE_TITLE: ${{ steps.state.outputs.title }}
         run: |
           ISSUE_BODY=$(jq -r '.body // ""' "$WORK_DIR/issue.json")
-          ISSUE_TITLE="${{ steps.state.outputs.title }}"
+          ISSUE_TITLE="$_ISSUE_TITLE"
           COMMENTS=$(jq -r '[.comments[] | "**\(.author.login)** (\(.createdAt)):\n\(.body)"] | join("\n\n---\n\n")' "$WORK_DIR/issue.json")
           ARCH_CONTEXT=""
           [[ -f "ARCHITECTURE.md" ]] && ARCH_CONTEXT=$(cat ARCHITECTURE.md)
@@ -522,9 +523,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           MODEL: ${{ steps.state.outputs.model }}
+          _ISSUE_TITLE: ${{ steps.state.outputs.title }}
         run: |
           ISSUE_BODY=$(jq -r '.body // ""' "$WORK_DIR/issue.json")
-          ISSUE_TITLE="${{ steps.state.outputs.title }}"
+          ISSUE_TITLE="$_ISSUE_TITLE"
           COMMENTS=$(jq -r '[.comments[] | "**\(.author.login)** (\(.createdAt)):\n\(.body)"] | join("\n\n---\n\n")' "$WORK_DIR/issue.json")
           ARCH_CONTEXT=""
           [[ -f "ARCHITECTURE.md" ]] && ARCH_CONTEXT=$(cat ARCHITECTURE.md)
@@ -717,9 +719,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ steps.state.outputs.pr_number }}
+          _TODO: ${{ steps.implement.outputs.todo }}
         run: |
           SUMMARY=$(jq -r '.structured_output.summary // "Task completed."' "$WORK_DIR/implement-result.json" 2>/dev/null)
-          TODO="${{ steps.implement.outputs.todo }}"
+          TODO="$_TODO"
 
           # Check if all todos are now done
           PR_BODY=$(gh pr view "$PR_NUMBER" --json body -q '.body')
