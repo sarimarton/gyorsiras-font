@@ -571,14 +571,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          PLAN_TASKS: ${{ steps.plan.outputs.tasks }}
+          PR_TITLE: ${{ steps.state.outputs.title }}
         run: |
           BRANCH="${{ steps.state.outputs.branch }}"
           git checkout -b "$BRANCH"
           git push -u origin "$BRANCH"
 
           # Build task list markdown
-          TASKS='${{ steps.plan.outputs.tasks }}'
-          TASK_LIST=$(echo "$TASKS" | jq -r '.[] | "- [ ] \(.)"')
+          TASK_LIST=$(echo "$PLAN_TASKS" | jq -r '.[] | "- [ ] \(.)"')
 
           {
             echo "Closes #${ISSUE_NUMBER}"
@@ -591,7 +592,7 @@ jobs:
           } > "$WORK_DIR/pr-body.md"
 
           PR_URL=$(gh pr create \
-            --title "${{ steps.state.outputs.title }}" \
+            --title "$PR_TITLE" \
             --body-file "$WORK_DIR/pr-body.md" \
             --base main \
             --head "$BRANCH" \
@@ -780,14 +781,15 @@ jobs:
         if: always() && steps.state.outputs.state != 'skip'
         env:
           GH_REPO: ${{ github.repository }}
+          _TODO: ${{ steps.implement.outputs.todo }}
+          _IMPL: ${{ steps.implement.outputs.outcome }}
+          _EVAL: ${{ steps.evaluate.outputs.decision }}
+          _PLAN: ${{ steps.plan.outputs.tasks }}
         run: |
           STATE="${{ steps.state.outputs.state }}"
           MODEL="${{ steps.state.outputs.model }}"
           PR_NUM="${{ steps.state.outputs.pr_number }}"
-          TODO="${{ steps.implement.outputs.todo }}"
-          _IMPL="${{ steps.implement.outputs.outcome }}"
-          _EVAL="${{ steps.evaluate.outputs.decision }}"
-          _PLAN="${{ steps.plan.outputs.tasks }}"
+          TODO="$_TODO"
           if [[ -n "$_IMPL" ]]; then OUTCOME="$_IMPL"
           elif [[ -n "$_EVAL" ]]; then OUTCOME="$_EVAL"
           elif [[ -n "$_PLAN" && "$_PLAN" != "[]" ]]; then OUTCOME="pr_created"
