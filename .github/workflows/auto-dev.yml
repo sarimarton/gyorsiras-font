@@ -189,7 +189,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4.2.2
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -707,7 +707,7 @@ jobs:
               fi
             fi
             # Check off the todo in PR description
-            UPDATED_BODY=$(echo "$PR_BODY" | sed "0,/- \[ \] $(echo "$NEXT_TODO" | sed 's/[[\.*^$()+?{}|]/\\&/g')/{s/- \[ \] /- [x] /}")
+            UPDATED_BODY=$(echo "$PR_BODY" | awk -v todo="$NEXT_TODO" 'BEGIN{done=0} !done && $0 == "- [ ] " todo {sub(/\[ \]/, "[x]"); done=1} 1')
             gh pr edit "$PR_NUMBER" --body "$UPDATED_BODY"
           fi
 
