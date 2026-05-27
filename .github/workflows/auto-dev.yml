@@ -320,10 +320,20 @@ jobs:
           ISSUE_BODY=$(jq -r '.body // ""' "$WORK_DIR/issue.json")
           ISSUE_TITLE="${{ steps.state.outputs.title }}"
           COMMENTS=$(jq -r '[.comments[] | "**\(.author.login)** (\(.createdAt)):\n\(.body)"] | join("\n\n---\n\n")' "$WORK_DIR/issue.json")
+          ARCH_CONTEXT=""
+          [[ -f "ARCHITECTURE.md" ]] && ARCH_CONTEXT=$(cat ARCHITECTURE.md)
 
           {
             echo "You are an AI developer evaluating a GitHub issue."
             echo ""
+            if [[ -n "$ARCH_CONTEXT" ]]; then
+              echo "--- PROJECT ARCHITECTURE ---"
+              echo ""
+              printf '%s\n' "$ARCH_CONTEXT"
+              echo ""
+              echo "--- END ARCHITECTURE ---"
+              echo ""
+            fi
             echo "REQUIRED STEPS (in order):"
             echo "1. Read CLAUDE.md in the repo root if it exists."
             echo "2. Find and read the files, components, and modules mentioned in the issue (use available tools)."
@@ -336,6 +346,7 @@ jobs:
             echo "RULES:"
             echo "- If the issue title/body describes the whole project purpose, a roadmap, or a vision without a concrete actionable task, choose EPIC."
             echo "- For EPIC: identify 1-2 small, concrete first steps (Low Hanging Fruit) that can be implemented independently."
+            echo "- For EPIC: also output 'architecture_overview': a 200-300 word technical overview of the project's architecture, key components, data flows, and module structure. This will be saved as ARCHITECTURE.md for future context."
             echo "- Prefer CLARIFY over guessing. If the issue has any ambiguity, ask."
             echo "- When asking questions, include code context and your recommendation."
             echo "- Ask at most 2-3 questions, the most important ones."
@@ -344,7 +355,7 @@ jobs:
             echo "- Do NOT choose READY without reading the relevant code first."
             echo "- Output ONLY valid JSON, no other text:"
             echo ""
-            echo 'If EPIC:    {"decision": "epic", "comment": "Why this is an epic", "lhf": [{"title": "Short task title", "body": "Task description with context"}]}'
+            echo 'If EPIC:    {"decision": "epic", "comment": "Why this is an epic", "architecture_overview": "200-300 word technical overview", "lhf": [{"title": "Short task title", "body": "Task description with context"}]}'
             echo 'If CLARIFY: {"decision": "clarify", "questions": "Your questions in Markdown with code references"}'
             echo 'If READY:   {"decision": "ready", "summary": "One-line issue summary", "approach": "Planned approach in 2-3 sentences with concrete file references"}'
             echo 'If BLOCKED: {"decision": "blocked", "reason": "Why you cannot proceed"}'
@@ -355,7 +366,7 @@ jobs:
             printf '%s\n' "$COMMENTS"
           } > "$WORK_DIR/evaluate-prompt.txt"
 
-          SCHEMA='{"type":"object","properties":{"decision":{"type":"string","enum":["epic","clarify","ready","blocked"]},"comment":{"type":"string"},"lhf":{"type":"array","items":{"type":"object","properties":{"title":{"type":"string"},"body":{"type":"string"}},"required":["title","body"]}},"questions":{"type":"string"},"summary":{"type":"string"},"approach":{"type":"string"},"reason":{"type":"string"}},"required":["decision"]}'
+          SCHEMA='{"type":"object","properties":{"decision":{"type":"string","enum":["epic","clarify","ready","blocked"]},"comment":{"type":"string"},"architecture_overview":{"type":"string"},"lhf":{"type":"array","items":{"type":"object","properties":{"title":{"type":"string"},"body":{"type":"string"}},"required":["title","body"]}},"questions":{"type":"string"},"summary":{"type":"string"},"approach":{"type":"string"},"reason":{"type":"string"}},"required":["decision"]}'
           RESULT=$(claude --dangerously-skip-permissions --output-format json --json-schema "$SCHEMA" -p "$(cat "$WORK_DIR/evaluate-prompt.txt")" 2>"$WORK_DIR/evaluate-stderr.txt") || true
           echo "$RESULT" > "$WORK_DIR/evaluate-result.json"
 
@@ -418,6 +429,14 @@ jobs:
         run: |
           COMMENT=$(jq -r '.structured_output.comment // "This issue describes an epic-level goal."' "$WORK_DIR/evaluate-result.json" 2>/dev/null)
           LHF=$(jq -c '.structured_output.lhf // []' "$WORK_DIR/evaluate-result.json" 2>/dev/null)
+          ARCH_OVERVIEW=$(jq -r '.structured_output.architecture_overview // ""' "$WORK_DIR/evaluate-result.json" 2>/dev/null)
+
+          if [[ -n "$ARCH_OVERVIEW" && ! -f "ARCHITECTURE.md" ]]; then
+            printf '%s\n' "$ARCH_OVERVIEW" > ARCHITECTURE.md
+            git add ARCHITECTURE.md
+            git commit -m "docs: add ARCHITECTURE.md [auto-dev]"
+            git push
+          fi
 
           SUB_ISSUES=""
           if [[ "${{ steps.repo-config.outputs.create_issues }}" != "false" ]]; then
@@ -504,19 +523,31 @@ jobs:
           ISSUE_BODY=$(jq -r '.body // ""' "$WORK_DIR/issue.json")
           ISSUE_TITLE="${{ steps.state.outputs.title }}"
           COMMENTS=$(jq -r '[.comments[] | "**\(.author.login)** (\(.createdAt)):\n\(.body)"] | join("\n\n---\n\n")' "$WORK_DIR/issue.json")
+          ARCH_CONTEXT=""
+          [[ -f "ARCHITECTURE.md" ]] && ARCH_CONTEXT=$(cat ARCHITECTURE.md)
 
           {
             echo "You are an AI developer creating a task breakdown for a GitHub issue."
             echo ""
+            if [[ -n "$ARCH_CONTEXT" ]]; then
+              echo "--- PROJECT ARCHITECTURE ---"
+              echo ""
+              printf '%s\n' "$ARCH_CONTEXT"
+              echo ""
+              echo "--- END ARCHITECTURE ---"
+              echo ""
+            fi
             echo "Read the codebase to understand the context, then output a JSON task list."
             echo ""
             echo "RULES:"
             echo "- Each task must be completable in ONE iteration (10-20 minutes of Claude work, one logical change)."
             echo "- Tasks must be ordered correctly (dependencies first)."
             echo "- Be specific: include file paths and what exactly changes."
-            echo "- Always add at least one testing task as the LAST task."
-            echo "  - If automated/headless testing is possible, describe it precisely: what command to run, what to assert."
-            echo "  - If only manual testing is possible, add a task in this exact format: 'Manual validation: [exactly what to do and what to look for]'"
+            echo "- Always add at least one testing task as the LAST task:"
+            echo "  - Prefix ALL test tasks with 'Test:' so the runner can execute them (e.g. 'Test: run python reverse_pdf.py input.pdf && compare pages with expected output')."
+            echo "  - Automated test: 'Test: run <exact shell command> — expected: <what success looks like (exit code, output, file diff)>'"
+            echo "  - If no automated assertion is possible, use: 'Manual validation: <step-by-step instructions and exactly what to look for>'"
+            echo "  - Prefer 'Test:' over 'Manual validation:'. Only use manual if there is truly no programmatic way to verify correctness."
             echo '- Output ONLY valid JSON: {"tasks": ["task description 1", "task description 2", ...]}'
             echo ""
             printf -- '--- ISSUE #%s: %s ---\n\n' "$ISSUE_NUMBER" "$ISSUE_TITLE"
@@ -533,7 +564,7 @@ jobs:
           echo "tasks=$TASKS" >> $GITHUB_OUTPUT
 
       - name: "ready → create branch and draft PR"
-        if: steps.state.outputs.state == 'ready' && steps.state.outputs.pr_number == '' && steps.plan.outputs.tasks != '[]' && steps.repo-config.outputs.create_prs != 'false'
+        if: steps.state.outputs.state == 'ready' && steps.state.outputs.pr_number == '' && steps.plan.outputs.tasks != '' && steps.plan.outputs.tasks != '[]' && steps.repo-config.outputs.create_prs != 'false'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -618,14 +649,29 @@ jobs:
           PR_BRANCH=$(gh pr view "$PR_NUMBER" --json headRefName -q '.headRefName')
           git checkout "$PR_BRANCH"
 
+          ARCH_CONTEXT=""
+          [[ -f "ARCHITECTURE.md" ]] && ARCH_CONTEXT=$(cat ARCHITECTURE.md)
+
           {
             echo "You are an AI developer implementing a specific task from a pull request."
             echo ""
+            if [[ -n "$ARCH_CONTEXT" ]]; then
+              echo "--- PROJECT ARCHITECTURE ---"
+              echo ""
+              printf '%s\n' "$ARCH_CONTEXT"
+              echo ""
+              echo "--- END ARCHITECTURE ---"
+              echo ""
+            fi
             printf 'TASK: %s\n' "$NEXT_TODO"
             echo ""
             echo "RULES:"
             echo "- Implement ONLY this specific task. Do not do more."
             echo "- Read relevant files before editing."
+            echo "- If the TASK starts with 'Test:', your job is to RUN the described test — not write new code."
+            echo "  Use your bash tool to execute the specified commands, observe the output, and verify the result."
+            echo "  On success: output {\"status\": \"completed\", \"summary\": \"Tests passed: <brief output summary>\"}"
+            echo "  On failure: output {\"status\": \"blocked\", \"reason\": \"Tests failed: <exact failure output>\", \"suggestion\": \"Suggested fix based on the failure\"}"
             echo "- If the TASK starts with 'Manual validation:', do NOT implement anything."
             echo "  Instead output: {\"status\": \"question\", \"text\": \"Please perform manual validation: <task>\", \"context\": \"<what was implemented so far>\"}"
             echo "- After implementing, output ONLY valid JSON:"
@@ -735,8 +781,15 @@ jobs:
           STATE="${{ steps.state.outputs.state }}"
           MODEL="${{ steps.state.outputs.model }}"
           PR_NUM="${{ steps.state.outputs.pr_number }}"
-          TODO="${{ steps.implement.outputs.todo || '' }}"
-          OUTCOME="${{ steps.implement.outputs.outcome || steps.evaluate.outputs.decision || steps.plan.outputs.tasks != '[]' && 'pr_created' || 'skipped' }}"
+          TODO="${{ steps.implement.outputs.todo }}"
+          _IMPL="${{ steps.implement.outputs.outcome }}"
+          _EVAL="${{ steps.evaluate.outputs.decision }}"
+          _PLAN="${{ steps.plan.outputs.tasks }}"
+          if [[ -n "$_IMPL" ]]; then OUTCOME="$_IMPL"
+          elif [[ -n "$_EVAL" ]]; then OUTCOME="$_EVAL"
+          elif [[ -n "$_PLAN" && "$_PLAN" != "[]" ]]; then OUTCOME="pr_created"
+          else OUTCOME="skipped"
+          fi
           TS=$(date +%s)
           DURATION=$(( TS - $(date -d @"${ACTIONS_STEP_DEBUG_START:-$TS}" +%s 2>/dev/null || echo "$TS") ))
 
