@@ -576,6 +576,7 @@ jobs:
         run: |
           BRANCH="${{ steps.state.outputs.branch }}"
           git checkout -b "$BRANCH"
+          git commit --allow-empty -m "chore: initialize task branch for #${ISSUE_NUMBER}"
           git push -u origin "$BRANCH"
 
           # Build task list markdown
