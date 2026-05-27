@@ -1,0 +1,12 @@
+# Python artifacts
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+
+# Data directory contents (preserve structure markers)
+data/**
+!data/**/.gitkeep
+!data/**/README.md
