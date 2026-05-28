@@ -220,10 +220,16 @@ jobs:
             echo "   - Respond to questions, adjust labels, create clarification issues as needed."
             echo "   - Bot/PM comments are marked 🤖 — skip those, they are your own past output."
             echo ""
-            echo "3. **README** — If README.md is missing or empty (stub only), write one."
-            echo "   - Base it on ARCHITECTURE.md, open issues, and your understanding of the codebase."
-            echo "   - A good README has: purpose, quick start, key concepts, links to issues."
-            echo "   - Only write README if it adds real value (skip if already substantive)."
+            echo "3. **Documentation & housekeeping** — You are a contributor for cross-cutting, non-feature work."
+            echo "   - README, ARCHITECTURE, CONTRIBUTING, docs/**.md, and non-workflow .github/ config are YOURS."
+            echo "   - Commit these DIRECTLY to main via 'commit_to_main' (no PR) — they don't need a feature branch."
+            echo "   - These are exactly the things that don't belong in a feature PR: general docs, project vision,"
+            echo "     devops/config, story-less housekeeping. Owning them here keeps feature PRs focused and avoids"
+            echo "     README merge conflicts between parallel PRs."
+            echo "   - If a feature PR is adding a project-wide README/vision doc, comment to redirect it (that work"
+            echo "     is yours, not the PR's)."
+            echo "   - Write a README if it is missing or a stub; base it on ARCHITECTURE.md, open issues, and the"
+            echo "     codebase. Only write docs that add real value (skip if already substantive)."
             echo ""
             echo "4. **User message** — If a user_message was provided, treat it as a priority instruction."
             echo "   It may ask you to create issues, reprioritize, comment on a PR, or anything else."
@@ -239,7 +245,7 @@ jobs:
             echo '- Comment PR:     {"type":"comment_pr","number":123,"body":"...","rationale":"..."}'
             echo '- Add label:      {"type":"add_label","target":"issue","number":123,"label":"ai:blocked","rationale":"..."}'
             echo '- Remove label:   {"type":"remove_label","target":"issue","number":123,"label":"ai:ready","rationale":"..."}'
-            echo '- Write README:   {"type":"write_readme","content":"full README.md content in Markdown","rationale":"..."}'
+            echo '- Commit to main: {"type":"commit_to_main","files":[{"path":"README.md","content":"full file content"}],"message":"docs: ...","rationale":"..."}'
             echo '- No action:      {"type":"noop","rationale":"Everything looks healthy"}'
             echo ""
             echo "Also include at the top level:"
@@ -253,7 +259,8 @@ jobs:
             echo "- Take the minimum necessary actions. Don't create issues for things already covered."
             echo "- Always include a 'noop' if you have no meaningful action to take."
             echo "- Comments must be written in the same language as the issue/PR they respond to."
-            echo "- For 'write_readme': only include if README.md is missing or a stub."
+            echo "- For 'commit_to_main': only allowed paths are README.md, ARCHITECTURE.md, CONTRIBUTING.md,"
+            echo "  docs/**.md, and non-workflow .github/ files. NEVER commit code or .github/workflows/ here."
             echo "- For 'create_issue': always include the 'ai' label so auto-dev picks it up."
             echo "- Do not create issues that duplicate existing open issues."
             echo ""
@@ -314,10 +321,11 @@ jobs:
                 "items": {
                   "type": "object",
                   "properties": {
-                    "type": {"type":"string","enum":["create_issue","comment_issue","comment_pr","add_label","remove_label","write_readme","noop"]},
+                    "type": {"type":"string","enum":["create_issue","comment_issue","comment_pr","add_label","remove_label","commit_to_main","noop"]},
                     "title":     {"type":"string"},
                     "body":      {"type":"string"},
-                    "content":   {"type":"string"},
+                    "files":     {"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}},
+                    "message":   {"type":"string"},
                     "labels":    {"type":"array","items":{"type":"string"}},
                     "number":    {"type":"integer"},
                     "target":    {"type":"string","enum":["issue","pr"]},
@@ -331,7 +339,7 @@ jobs:
             "required": ["summary","report","actions"]
           }'
 
-          RESULT=$(claude --dangerously-skip-permissions --output-format json --json-schema "$SCHEMA" -p "$(cat "$WORK_DIR/pm-prompt.txt")" 2>"$WORK_DIR/pm-stderr.txt") || true
+          RESULT=$(claude --dangerously-skip-permissions --model claude-opus-4-7 --output-format json --json-schema "$SCHEMA" -p "$(cat "$WORK_DIR/pm-prompt.txt")" 2>"$WORK_DIR/pm-stderr.txt") || true
           echo "$RESULT" > "$WORK_DIR/pm-result.json"
 
           ACTION_COUNT=$(jq '.structured_output.actions | length' "$WORK_DIR/pm-result.json" 2>/dev/null || echo "0")
@@ -346,8 +354,6 @@ jobs:
           ACTIONS=$(jq -c '.structured_output.actions // []' "$WORK_DIR/pm-result.json" 2>/dev/null || echo "[]")
           ACTION_COUNT=$(echo "$ACTIONS" | jq 'length')
           echo "Executing $ACTION_COUNT action(s)..."
-
-          README_WRITTEN=false
 
           for i in $(seq 0 $((ACTION_COUNT - 1))); do
             ACTION=$(echo "$ACTIONS" | jq -c ".[$i]")
@@ -405,15 +411,33 @@ jobs:
                 fi
                 ;;
 
-              write_readme)
-                CONTENT=$(echo "$ACTION" | jq -r '.content // ""')
-                if [[ -n "$CONTENT" ]]; then
-                  printf '%s\n' "$CONTENT" > README.md
-                  git add README.md
-                  git commit -m "docs: write README.md [auto-dev-pm]"
-                  git push
-                  README_WRITTEN=true
-                  echo "  README.md written and pushed"
+              commit_to_main)
+                MSG=$(echo "$ACTION" | jq -r '.message // "docs: update"')
+                FILES=$(echo "$ACTION" | jq -c '.files // []')
+                FILE_COUNT=$(echo "$FILES" | jq 'length')
+                staged=0
+                for j in $(seq 0 $((FILE_COUNT - 1))); do
+                  F=$(echo "$FILES" | jq -c ".[$j]")
+                  P=$(echo "$F" | jq -r '.path')
+                  C=$(echo "$F" | jq -r '.content')
+                  # Reject path traversal / absolute paths outright.
+                  if [[ "$P" == *".."* || "$P" == /* ]]; then
+                    echo "  ✗ rejected (traversal/absolute): $P"; continue
+                  fi
+                  # Allowlist: top-level docs, docs/**.md, non-workflow .github/ config.
+                  if [[ "$P" =~ ^(README|ARCHITECTURE|CONTRIBUTING)\.md$ ]] \
+                     || [[ "$P" =~ ^docs/.*\.md$ ]] \
+                     || { [[ "$P" =~ ^\.github/ ]] && [[ ! "$P" =~ ^\.github/workflows/ ]]; }; then
+                    mkdir -p "$(dirname "$P")"
+                    printf '%s\n' "$C" > "$P"
+                    git add "$P" && staged=$((staged + 1)) && echo "  staged: $P"
+                  else
+                    echo "  ✗ rejected (not in allowlist): $P"
+                  fi
+                done
+                if [[ "$staged" -gt 0 ]]; then
+                  git commit -m "$MSG [auto-dev-pm]"
+                  git push && echo "  committed $staged file(s) directly to main"
                 fi
                 ;;
 
@@ -461,7 +485,7 @@ jobs:
                 comment_issue) DETAIL="#$(echo "$A" | jq -r '.number')" ;;
                 comment_pr)    DETAIL="PR #$(echo "$A" | jq -r '.number')" ;;
                 add_label|remove_label) DETAIL="$(echo "$A" | jq -r '.target')#$(echo "$A" | jq -r '.number') — $(echo "$A" | jq -r '.label')" ;;
-                write_readme)  DETAIL="README.md" ;;
+                commit_to_main) DETAIL=$(echo "$A" | jq -r '[.files[]?.path] | join(", ")') ;;
                 noop)          DETAIL="" ;;
                 *)             DETAIL="(unknown)" ;;
               esac
